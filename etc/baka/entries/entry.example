@@ -1,0 +1,79 @@
+# This is an entry. This is part of the configuration of the "baka"
+# backup software. Here you can set the parameters for backuping the
+# requred data set.  See examples below.
+#
+# See `man baka` for more info or visit http://nixhacks.net/baka
+
+# Destination dir.
+#
+# This is this required parameter. It will be used if the `local`
+# parameter is not specified in main.conf. You can specify it only
+# once in an entry.
+#
+# This is the only required parameter. And the only one that can be
+# specified only once. In addition to the destination folder, at
+# least one variable with data must be specified. See below.
+dest = /home/user/backups
+
+# Files or directories to backup.
+#
+# Syntax:
+#       files = /path
+#
+# Also you can do this:
+#       files = /path/1 path/2
+#
+# You can add the `files` variable as many times as you like.
+files = /var/www/html
+
+# Exclusions.
+#
+# This parameter is in addition to the `files` parameter. With its
+# help you can specify which files or folders should be excluded
+# from the backup.
+#
+# Syntax:
+# List files and folders separated by commas without spaces on
+# one line:
+#       exclude = env,logs,__pycache__
+#
+# Or split them into multiple lines:
+#       exclude = env
+#       exclude = logs
+#       exclude = __pycache__
+exclude = env,logs,__pycache__
+
+# Databases.
+#
+# baka can dump MariaDB/MySQL (shortcut 'mysql') and PostgreSQL
+# (shortcut 'postgres') databases.
+#
+# Syntax:
+#       [dmbs] = host:port:database:user:password
+#
+# For example:
+#       postgres = localhost:5432:mydb:user:password
+#
+# You can use shortened syntax too (use standart host and port):
+#       [dmbs] = host:database:user:password
+#       [dmbs] = database:user:password
+#
+# NOTE: that due to the nature of the parser, colons and hash
+# characters cannot be used in the database password.
+#mysql    = localhost:port:database:user:password
+#postgres = localhost:port:database:user:password
+
+# Commands.
+#
+# In addition to files and databases, baka can execute an
+# arbitrary Bash command for you.
+#
+# For example:
+#       command = echo "Hello, World!"
+#
+# This feature is disabled by default and must be added in
+# the main config.
+# DON'T USE UNTRUSTED COMMANDS IN ENTRY!
+# This feature is pottentially dangerous. Make sure that access
+# to the entries is restricted.
+#command = echo "Are you sure you want to enable it?"

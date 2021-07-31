@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Make DEB package!
+
+[ -d $PWD/dist/ ] && rm -rf dist/
+[ -f baka_*.deb ] && rm baka_*.deb
+
+# DIRS
+
+prefix=dist
+mkdir -p $prefix/DEBIAN
+mkdir -p $prefix/usr/bin
+mkdir -p $prefix/usr/share/bash-completion/completions
+mkdir -p $prefix/usr/share/man/man1
+cp -r etc/ dist/
+
+# BINARIES
+
+cp baka dist/usr/bin/baka && chmod +x dist/usr/bin/baka
+cp completion dist/usr/share/bash-completion/completions/baka
+
+# MANPAGES
+
+md2man ./manpage.md dist/usr/share/man/man1/baka.1
+sed -i 's%\.TH "" "" "" "" ""%\.TH BAKA 1 "31 July 2021" "baka 0.1.2"%' dist/usr/share/man/man1/baka.1
+gzip -9 dist/usr/share/man/man1/baka.1
+
+# DEBIAN/*
+
+ver=0.1.2
+
+cat > dist/DEBIAN/control << EOF
+Package: baka
+Version: $ver
+Section: admin
+Priority: optional
+Maintainer: gd <gechandev@gmail.com>
+Homepage: http://nixhacks.net/baka
+Architecture: all
+Depends: rsync, s3cmd
+Description: Simple backuping tool.
+ Backup files and MySQL/MariaDB and PostgreSQL databases.
+EOF
+
+cat > dist/DEBIAN/changelog << EOF
+baka (0.1.2) testing; urgency=medium
+
+ * Initial release.
+
+ -- gd <gechandesu@gmail.com>  Sat, 31 Jul 2021 15:22:17 +0300
+EOF
+
+cat > dist/DEBIAN/copyright << EOF
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: baka
+Upstream-Contact: http://nixhacks.net/baka
+Source: http://nixhacks.net/baka
+
+Files: *
+Copyright: 2021 gd <gechandev@gmail.com>
+License: GPL-3.0+
+
+Files: debian/*
+Copyright: 2021 gd <gechandev@gmail.com>
+License: GPL-3.0+
+
+License: GPL-3.0+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+ .
+ This package is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program. If not, see <https://www.gnu.org/licenses/>.
+ .
+ On Debian systems, the complete text of the GNU General
+ Public License version 3 can be found in "/usr/share/common-licenses/GPL-3".
+
+# Please also look if there are files or directories which have a
+# different copyright/license attached and list them here.
+# Please avoid picking licenses with terms that are more restrictive than the
+# packaged work, as it may make Debian's contributions unacceptable upstream.
+#
+# If you need, there are some extra license texts available in two places:
+#   /usr/share/debhelper/dh_make/licenses/
+#   /usr/share/common-licenses/
+EOF
+
+dpkg-deb --build ./dist baka_$ver.deb
