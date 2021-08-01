@@ -4,8 +4,8 @@ Simple and flexible file and database backup software written in Bash.
 
 More info in manuals:
 
-    - [man [En]](https://nixhacks.net/baka/man)
-    - [man [Ru]](https://nixhacks.net/baka/man-ru)
+- [man [En]](https://nixhacks.net/baka/man)
+- [man [Ru]](https://nixhacks.net/baka/man-ru)
 
 ## Installation
 
