@@ -247,7 +247,7 @@ bk_load_entry() {
     loaded_entry="$(bk_load_conf "$1")"
 
     # Check required parameters.
-    if ! egrep "archive|copy|database|command" <<< "$loaded_entry" > /dev/null; then
+    if ! egrep "^(archive|copy|database|command)=" <<< "$loaded_entry" > /dev/null; then
         bk_err "$1: configuration error: no data to backup."
     fi
 
@@ -461,7 +461,7 @@ bk_run_command() {
         for cmd in "${entry_command[@]}"; do
             bk_log -p "Executing command: $cmd"
             # Run!
-            eval "$(printf "$cmd") &>> "$log""
+            [ "$dry_run" ] || eval "$(printf "$cmd") &>> "$log""
         done
     else
         bk_log -p "ERROR: tried to execute commands: ${entry_command[@]}"
@@ -888,18 +888,14 @@ bk_do_backup() {
         bk_log -p "Local storage: $entry_local"
         bk_log -p "Remote storage: $entry_remote"
 
-#echo "RECOVERED LOCAL: ${entry_local//$dir_per_date/}"
-
+        [ "${entry_command[@]}" ] && bk_run_command
         [ "$dry_run" ] || {
-            bk_run_command
             bk_do_archive
             bk_do_copy
             bk_backup_database
         }
 
-        [ "$dry_run" ] && {
-            bk_test_remote
-        }
+        [ "$dry_run" ] && { bk_test_remote; }
 
         # Backup END
 
