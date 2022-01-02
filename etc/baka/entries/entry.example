@@ -42,7 +42,7 @@ exclude  =   backups,logs,env,__pycache__,node_modules
 # Available schemas:
 #   For MySQL/MariaDB: mysql, mariadb
 #   For PostgreSQL: postgresql, postgres, psql
-database =   postgres://user:password@localhost:5432/database
+#database =   postgres://user:password@localhost:5432/database
 
 # Commands.
 #
