@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-#   baka completion script.
+# * baka (v 0.2.0) completion script.
 
-baka_get_entries() {
+_baka_get_entries() {
     # Collect entries list from /etc/baka/entries
-    baka_entries=./entries # /etc/baka/entries
+
+    baka_entries=/etc/baka/entries
 
     # This is just baka bk_find_entries() function copy-paste.
 
     local all_files="$(find "$baka_entries" -type f)"
 
-    for file in $all_files
-    do
+    for file in $all_files; do
         # Resolve symlinks.
         if [ -L "$file" ]; then
             s="$(readlink "$file")"
@@ -19,47 +19,44 @@ baka_get_entries() {
             fi
         fi
         # Collect all entries, except ignored if set.
-        if [[ ! "${ignore[@]}" =~ "$(basename $file)" ]]
-        then
-            bk_all_entries+=("${file##*/}")
+        if [[ ! "${ignore[@]}" =~ "$(basename $file)" ]]; then
+            all_entries+=("${file##*/}")
         fi
     done
 
-    echo "${bk_all_entries[@]}"
+    echo "${all_entries[@]}"
 }
 
-baka_completion() {
+_baka() {
     local cur prev
     cur=${COMP_WORDS[COMP_CWORD]}
     prev=${COMP_WORDS[COMP_CWORD-1]}
 
     case ${COMP_CWORD} in
-        1)
+        1|3)
             # Firs level commands.
             COMPREPLY=($(compgen -W \
-                "help --help --version
-                backup list test show edit remove" -- ${cur}))
+                "help --help --version -c --config
+                backup list remove" -- ${cur}))
             ;;
-        2)
+        2|4)
             # Subcommands.
             case ${prev} in
                 backup)
                     COMPREPLY=($(compgen -W \
                         "help --help -i --ignore -e --entry
-                        --local --no-verify --remove" -- ${cur}))
+                        --local --no-verify --dry-run --remove" -- ${cur}))
                     ;;
                 list)
                     COMPREPLY=($(compgen -W \
-                        "help --help
-                        --verbose -v --short -s -S" -- ${cur}))
-                    ;;
-                test)
-                    COMPREPLY=($(compgen -W \
-                        "help --help --verbose -v" -- ${cur}))
+                        "help --help -v --verbose" -- ${cur}))
                     ;;
                 remove)
                     COMPREPLY=($(compgen -W \
-                        "help --help --force -f" -- ${cur}))
+                        "help --help -f --force -l --list" -- ${cur}))
+                    ;;
+                -c|--config|--config=)
+                    compopt -o default; COMPREPLY=()
                     ;;
                 *) COMPREPLY=()
                     ;;
@@ -69,7 +66,7 @@ baka_completion() {
             # Subcommand options completion.
             case ${COMP_WORDS[2]} in
                 -i|--ignore|--ignore=|-e|--entry|--entry=)
-                    entries_list="$(baka_get_entries)"
+                    entries_list="$(_baka_get_entries)"
                     COMPREPLY=($(compgen -W \
                         "$entries_list" -- ${cur}))
                     ;;
@@ -84,4 +81,4 @@ baka_completion() {
     esac
 }
 
-complete -F baka_completion baka
+complete -F _baka baka ./baka

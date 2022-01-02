@@ -1,79 +1,51 @@
-# This is an entry. This is part of the configuration of the "baka"
-# backup software. Here you can set the parameters for backuping the
-# requred data set.  See examples below.
-#
-# See `man baka` for more info or visit http://nixhacks.net/baka
+# * baka 0.2.0
+# This is Entry file example. See baka(1) for more info.
 
-# Destination dir.
+# Local storage.
 #
-# This is this required parameter. It will be used if the `local`
-# parameter is not specified in main.conf. You can specify it only
-# once in an entry.
-#
-# This is the only required parameter. And the only one that can be
-# specified only once. In addition to the destination folder, at
-# least one variable with data must be specified. See below.
-dest = /home/user/backups
+# Specify path to store local backups.
+local    =   /srv/example.org/backups
 
-# Files or directories to backup.
+# Remote storage.
 #
-# Syntax:
-#       files = /path
-#
-# Also you can do this:
-#       files = /path/1 path/2
-#
-# You can add the `files` variable as many times as you like.
-files = /var/www/html
+# You can override global remote storage configuration there.
+# See baka(1) or baka.conf example /etc/baka/baka.conf
+#remote   =   rsync://backups@123.45.67.89:2022/home/backups
 
-# Exclusions.
+# Filename prefix.
 #
-# This parameter is in addition to the `files` parameter. With its
-# help you can specify which files or folders should be excluded
-# from the backup.
-#
-# Syntax:
-# List files and folders separated by commas without spaces on
-# one line:
-#       exclude = env,logs,__pycache__
-#
-# Or split them into multiple lines:
-#       exclude = env
-#       exclude = logs
-#       exclude = __pycache__
-exclude = env,logs,__pycache__
+# If you want override autoprefix set prefix there.
+prefix   =   example.org_
 
-# Databases.
+# Archive files adn directories.
 #
-# baka can dump MariaDB/MySQL (shortcut 'mysql') and PostgreSQL
-# (shortcut 'postgres') databases.
+# Files be archived with tar into .tar.gz format.
+#archive  =   /srv/http/example.org/public
+
+# Exclude.
 #
-# Syntax:
-#       [dmbs] = host:port:database:user:password
+# You can exclude some files and directories from archive.
+# Items can be set in one line comma separated.
+exclude  =   backups,logs,env,__pycache__,node_modules
+
+# Copy file or directory.
 #
-# For example:
-#       postgres = localhost:5432:mydb:user:password
+# Simple copy file of directory via 'cp' without compression.
+# NOTE: 'exclude' varioable not affects on 'copy'.
+#copy     =   /srv/http/example.org/data.zip
+
+# Database.
 #
-# You can use shortened syntax too (use standart host and port):
-#       [dmbs] = host:database:user:password
-#       [dmbs] = database:user:password
-#
-# NOTE: that due to the nature of the parser, colons and hash
-# characters cannot be used in the database password.
-#mysql    = localhost:port:database:user:password
-#postgres = localhost:port:database:user:password
+# Dump MySQL/MariaDB or PostgreSQL database. Requisites must be passed as
+# DB URI. For example:
+#   [schema]://[user[:password]]@[host[:port]]/[database]
+# Available schemas:
+#   For MySQL/MariaDB: mysql, mariadb
+#   For PostgreSQL: postgresql, postgres, psql
+database =   postgres://user:password@localhost:5432/database
 
 # Commands.
 #
-# In addition to files and databases, baka can execute an
-# arbitrary Bash command for you.
-#
-# For example:
-#       command = echo "Hello, World!"
-#
-# This feature is disabled by default and must be added in
-# the main config.
-# DON'T USE UNTRUSTED COMMANDS IN ENTRY!
-# This feature is pottentially dangerous. Make sure that access
-# to the entries is restricted.
-#command = echo "Are you sure you want to enable it?"
+# You can execute any Bash command from Entry. This feature is disabled
+# by default.
+#command  =   /srv/http/example.org/dump.py --save /srv/http/example.org/data.zip

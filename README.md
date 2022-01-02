@@ -1,6 +1,6 @@
 # baka
 
-Simple and flexible file and database backup software written in Bash.
+Simple and flexible full backup software written in Bash.
 
 More info in manuals:
 
@@ -13,13 +13,13 @@ More info in manuals:
 Add repository to /etc/apt/sources.list.d/:
 
 ```
-sudo echo 'deb [arch = all] http://repos.gch.icu/debian testing main' > /etc/apt/sources.list.d/gd-debian.list
+sudo echo 'deb [arch=all] http://repos.gch.icu/debian testing main' > /etc/apt/sources.list.d/ge.list
 ```
 
 Add key:
 
 ```
-curl -s http://repos.gch.icu/DEB-GPG-KEY | sudo gpg --no-default-keyring --keyring gnupg-ring:/etc/apt/trusted.gpg.d/gd-debian.gpg --import
+curl -s http://repos.gch.icu/DEB-GPG-KEY | sudo gpg --no-default-keyring --keyring gnupg-ring:/etc/apt/trusted.gpg.d/ge.gpg --import
 ```
 
 Update package list and install baka:

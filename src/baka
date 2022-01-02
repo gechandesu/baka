@@ -1,0 +1,1072 @@
+#!/usr/bin/env bash
+
+##########################################################################
+#
+#   baka
+#
+#   Copyright (C) 2021 ge <http://nixhacks.net/>.
+#
+#   This program is free software: you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation, either version 3 of the License, or
+#   (at your option) any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+##########################################################################
+
+set -o errexit  # Exit if error occurs
+baka_version=0.2.0
+
+# BAKA BASE CONFIGURATION
+#########################
+
+# Configuration lookup pathes.
+# baka_conf is system wide configuration
+baka_conf=/etc/baka/baka.conf
+
+# User's local configuration overrides system wide configuration.
+baka_local_conf=${HOME}/.config/baka/baka.conf
+
+# DEFAULTS
+# See baka(1)
+entries=/etc/baka/entries
+log=/var/log/baka
+log_format='[%d %b %Y %T %z] {log}'
+filename_format='{prefix}{name}_%Y%m%d-%H%M'
+autoprefix=true
+allow_commands=false
+backups_livetime=30
+
+##########################################################################
+#   SERVICE FUNCTIONS
+##########################################################################
+
+bk_help() {
+    case "$1" in
+        backup) bk_do_backup_help;;
+        list)   bk_list_entries_help;;
+        remove) bk_remove_old_backups_help;;
+        *) : ;;
+    esac
+    cat <<- EOF
+	Usage: baka [--version] [--help | help] [-c | --config=<file>]
+	            <command> [<options>...]
+
+	Commands and options:
+	    backup                  do backup right now.
+	    list                    list backup entries.
+	    remove                  remove old backups.
+	    -c, --config=<file>     source baka.conf file.
+	    --version               print version and exit.
+	    --help, help            print this help message and exit.
+
+	See 'man baka' or 'baka <command> help' for more info.
+
+	        ,<baka!>
+	(#｀皿´)
+
+	Senpai wants you to do backups!
+	EOF
+    exit 0
+}
+
+bk_do_backup_help() {
+    cat <<- EOF
+	Do backup.
+
+	Usage: baka backup [--help | help] [-i | --ignore=<entry>]
+	                   [-e | --entry=<entry>] [--local] [--no-verify]
+	                   [--dry-run] [--remove]
+	Options:
+	    -i, --ignore=<entry>    run backup for all entries, except ignored.
+	    -e, --entry=<entry>     run backup for selected entry.
+	    --local                 force local backup.
+	    --no-verify             don't check archives integrity.
+	    --dry-run               configuration test.
+	    --remove                remove old backups (forced).
+	    --help, help            print this message and exit.
+	EOF
+    exit 0
+}
+
+bk_list_entries_help() {
+    cat <<- EOF
+	List backup entries.
+
+	Usage: baka list [--help | help] [-v | --verbose]
+
+	Options:
+	    -v, --verbose           list entries verbosely (table format).
+	    --help, help            print this message and exit.
+	EOF
+    exit 0
+}
+
+bk_remove_old_backups_help() {
+    cat <<- EOF
+	Remove old local backups (older than $livetime days).
+	Backup livetime is set in $conf
+
+	Usage: baka remove [--help | help] [-l | --list] [-f|--force]
+
+	Options:
+	    -l, --list      print a list of files to be deleted.
+	    -f, --force     force remove.
+	    --help, help    print this message and exit.
+	EOF
+    exit 0
+}
+
+bk_version() {
+    cat <<- EOF
+	baka $baka_version
+	Copyright (C) 2021 ge <http://nixhacks.net/>.
+	License GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>.
+	This is free software: you are free to change and redistribute it.
+	There is NO WARRANTY, to the extent permitted by law.
+	EOF
+    exit 0
+}
+
+##########################################################################
+#   LOGGING AND ERROR MESSAGING
+##########################################################################
+
+bk_err() {
+    # Show error message and exit from script.
+    # Arguments:
+    #   $@ - error message (can be partial).
+    echo -e "${0##*/}: $@" | sed 's/^ *//g' >&2
+    exit 1
+}
+
+bk_cli_err() {
+    # Bad command/option error message.
+    # Arguments:
+    #   $1 - option name.
+    echo -e "${0##*/}: $1: unknown option\n" \
+        "\bSee 'baka help' or 'man baka' for info." >&2
+}
+
+bk_log() {
+    # Logger. Write log string into `log` file.
+    # Log is formatted by `log_format` value.
+    # Arguments:
+    #   -p - print log message to STDOUT too.
+    #   $@ - log message
+
+    while (( "$#" )); do
+        case "$1" in
+            -p) local print=1; shift;;
+            *)  local log_message="$@"; shift "$#";;
+        esac
+    done
+
+    # Read STDIN if log message not sent as argument.
+    [[ "$log_message" ]] || local log_message="$(cat <&0)"
+
+    # Don't write log if `log_message` is empty.
+    [[ "$log_message" == '' ]] && return 0
+
+    # Escape ine and remove ANSI characters
+    local escaped_log_message="$( \
+        echo -e "$log_message" |
+        sed -r 's/\x1B\[(([0-9]+)(;[0-9]+)*)?[m,K,H,f,J]//g' |
+        sed 's/[\/&]/\\&/g')"
+
+    while IFS= read -r log_line; do
+        [ "$print" ] && echo -e "$log_message"
+        date +"$log_format" | sed "s/{log}/$log_line/" >> "$log"
+    done <<< "$escaped_log_message"
+}
+
+##########################################################################
+#   LOAD CONFIGURATION
+##########################################################################
+
+bk_load_conf() {
+    # Load configuration file. Return clean config.
+    # Arguments:
+    #   $1 - path to configuration file.
+    # Here is:
+    #   - Remove spaces and tabs across '='
+    #   - Remove comments ('#')
+    #   - Remove blank lines
+    #   - Escape whitespaces and special characters (via printf)
+    local bk_config="$(sed \
+        's/[[:space:]]\+=[[:space:]]\+/=/g;/^#/d;/^$/d;s/#.*//g' <(\
+        cat "$1" | grep = \
+    ) | while read -r LN; do echo $(printf '%q' "$LN"); done)"
+    echo "$bk_config"
+}
+
+bk_load_baka_conf() {
+    # Load, test and source baka.conf.
+    #
+    # Use `conf` value if it is set as CLI argument (`--config` option)
+    # or use local or global config file. See baka(1) DEFAULTS.
+
+    # Lookup confiuration
+    if [ "$conf" ]; then
+        : # do nothing if configuration file is passed as CLI argument.
+    elif [ -f "$baka_local_conf" ]; then
+        conf="$baka_local_conf"  # use local configuration if exists.
+    elif [ -f "$baka_conf" ]; then
+        conf="$baka_conf"  # use global configuration if exists.
+    else
+        echo "${0##*/}: WARNING: no configuration files found." \
+            "Default values will be used." >&2
+        bk_log 'baka: WARNING: no configuration files found.' \
+            'Default values will be used.'
+        return 0  # Exit from function
+    fi
+
+    local illegal="$( cat "$conf" |
+        egrep "^(prefix|archive|copy|exclude|database|command)=")"
+    if [[ "$illegal" != '' ]]; then
+        bk_err "$conf: configuration error: illegal variable $illegal"
+    fi
+
+    # Load and source (via eval) configuration!
+    eval "$(bk_load_conf "$conf")"
+}
+
+bk_load_entry() {
+    # Verify entry file. Return `loaded_entry`
+    # Arguments:
+    #   $1 - entry filename.
+
+    # Load entry content.
+    loaded_entry="$(bk_load_conf "$1")"
+
+    # Check required parameters.
+    if ! egrep "archive|copy|database|command" <<< "$loaded_entry" > /dev/null; then
+        bk_err "$1: configuration error: no data to backup."
+    fi
+
+    # Don't allow overwrite baka.conf variables
+    local illegal="$( \
+        egrep "^(entries|log|log_format|filename_format|autoprefix|allow_commands|livetime|dir_per_date)=" \
+            <<< "$loaded_entry")"
+    if [[ "$illegal" != '' ]]; then
+        bk_err "$1: configuration error: illegal variable $illegal"
+    fi
+}
+
+##########################################################################
+#   PARSE ENTRIES
+##########################################################################
+
+bk_parse_uri() {
+    # Universal URI parser.
+
+    uri="$1"
+    schema="$(cut -d ':' -f 1 <<<"$uri")"
+    user="$(grep -Po '(?<=://)(.*)(?=@)' <<<"$uri" | cut -d ':' -f 1)"
+    password="$(passw=$(grep -Po '(?<=://)(.*)(?=@)' <<<"$uri"); \
+        [[ $passw =~ .+:.+ ]] && echo ${passw##*:})" || true
+    host="$(grep -Po '(?<=@)(.*)' <<<"$uri" |
+        cut -d '/' -f 1 | cut -d ':' -f 1)"
+    port="$(prt=$(grep -Po '(?<=@)(.*)' <<<"$uri" |
+        cut -d '/' -f 1); [[ $prt =~ .+:[0-9]{1,} ]] &&
+        echo ${prt##*:})" || true
+    path="$(pth=$(grep -Po '(?<=@)(.*)' <<<"$uri"); [[ $pth =~ :~ ]] &&
+        cut -d ':' -f 2 <<<"$pth" ||
+        grep -Po '(?<=(:[~/])|/)(.*)' <<<"$pth" |
+        xargs -I {} echo /{} | sed 's%//%/%g')" || true
+
+    # Decode password
+    __urldecode() {
+        : "${*//+/ }"; echo -e "${_//%/\\x}";
+    }
+    password="$(__urldecode "$password")" || true
+}
+
+# Get parameters from entry.
+
+bk_get_entry_local() {
+    # Get 'local' from entry.
+    if [[ $(grep -c 'local=' <<< "$loaded_entry") == 0 ]]; then
+        bk_log -p "baka: WARNING: 'local' is not set. Use 'local' from $conf"
+        [ "$local" ] || { bk_err "No 'local' value in $conf"; }
+        entry_local="$local"  # Apply global value.
+        return 0
+    elif [[ $(grep -c 'local=' <<< "$loaded_entry") > 1 ]]; then
+        bk_err "Double 'local' parameter."
+    fi
+    # Get 'local' value.
+    entry_local="$(awk -F '=' '/^local=/ {print $2}' <<< "$loaded_entry" |
+        sed 's%\\%%g')" # seduce backslash for whitespases.
+    if [ ! -d "$entry_local" ]; then
+        bk_err "$1: $entry_local: destination dir does not exist."
+    fi
+}
+
+bk_get_entry_remote() {
+    # Get 'remote' from entry.
+    if [[ "$(grep -c 'remote=' <<< "$loaded_entry")" == 0 ]]; then
+        bk_log "baka: WARNING: 'remote' is not set. Use 'remote' from $conf"
+        [ "$remote" ] || { bk_err "No 'remote' value in $conf"; }
+        entry_remote="$remote"  # Apply global value.
+        return 0
+    elif [[ "$(grep -c 'remote=' <<< "$loaded_entry")" > 1 ]]; then
+        bk_err "Double 'remote' parameter."
+    fi
+    entry_remote="$(awk -F '=' '/^remote=/ {print $2}' <<< "$loaded_entry")"
+
+    local schema="$(cut -d ':' -f 1 <<<"$entry_remote")"
+    case "${schema,,}" in
+        rsync|s3|none) : ;;
+        *) br_err "Unsupported protocol $schema."
+        # TODO оставить тут контакт для feature request'ов
+    esac
+}
+
+bk_get_entry_prefix() {
+    # Get 'prefix' from entry.
+    # Arguments:
+    #   $1 -- entry file name.
+    if [[ "${autoprefix,,}" == true ]]; then
+        entry_prefix="${1##*/}_"
+    fi
+
+    if grep 'prefix=' > /dev/null <<< "$loaded_entry"; then
+        entry_prefix="$(awk -F '=' '/^prefix=/ {print $2}' <<< "$loaded_entry")"
+    fi
+}
+
+bk_get_entry_data() {
+    # This function gets to entry data and test it!
+    #
+    # Return array of valid entry parameter values.
+    #
+    # For example you wrote 3 different database requisites
+    # in /etc/baka/entries/example.conf:
+    #   database = mysql://user1:pass1@host/database1
+    #   database = mysql://user2:pass2@host/database2
+    #   database = postgres://user1:pass1@host/database1
+    # All requisites will be tested and you receive an array:
+    #   bk_database = ( mysql://user1:pass1@host/database1
+    #       mysql://user2:pass2@host/database2
+    #       postgres://user1:pass1@host/database1 )
+    #
+    # Parameters for this function:
+    #   $1 - search query (e.g.: archive, database, copy, etc.).
+
+    eval "entry_$1=()"  # Set empty data to prevent dublicates.
+
+    # Collect values.
+    local raw_values="$(grep "$1" <<< "$loaded_entry" |
+        awk -F '=' '{for(i=2;i<=NF;i++){printf "%s\n", $i}}')"
+
+    while read -r value; do
+        # Check value
+        case "$1" in
+            archive|copy) [ "$value" ] && bk_test_file "$value";;
+            database) [ "$value" ] && bk_test_database "$value";;
+            *) : ;;
+        esac
+
+        # Save values
+        eval "entry_$1+=("$value")"
+    done <<< "$raw_values"
+}
+
+##########################################################################
+#   REMOTE
+##########################################################################
+
+bk_check_rsync() {
+    if hash rsync 2>/dev/null; then
+        rsync_bin=/usr/bin/rsync
+    else
+        bk_err 'rsync executable not found.'
+    fi
+}
+
+bk_check_s3cmd() {
+    if hash s3cmd 2>/dev/null; then
+        # If s3cmd is installed via OS package manager.
+        s3cmd_bin=/usr/bin/s3cmd
+    elif [ -f /usr/local/bin/s3cmd ]; then
+        # If s3cmd is installed globally via Python pip.
+        s3cmd_bin=/usr/local/bin/s3cmd
+    else
+        bk_err 's3cmd executable not found.'
+    fi
+}
+
+bk_upload_via_rsync() {
+    # RSYNC
+    bk_check_rsync
+    local filename="$1"
+    [ "$port" ] || port=22
+    uri="${user}@${host}:/${path}"
+    ssh -p "$port" "${user}@${host}" "mkdir -p ${path}/${dir_per_date}; exit"
+    rsync --contimeout=3 -a -e "ssh -p $port" "$filename" "${uri}/${dir_per_date}" | bk_log
+}
+
+bk_upload_via_s3cmd() {
+    # S3
+    bk_check_s3cmd
+    local filename="$1"
+    s3cmd -p --no-progress \
+        put "$filename" "${entry_remote}/${dir_per_date}/" | bk_log
+}
+
+bk_upload_file() {
+    # Select function to upload.
+    #
+    # $1 -- file passed to upload.
+
+    [[ "${entry_remote,,}" == 'none' ]] && return 0
+
+    bk_parse_uri "$entry_remote"
+
+    bk_log -p "Uploading ${1##*/} to remote server ..."
+    case "$schema" in
+        rsync)  bk_upload_via_rsync "$1";;
+        s3)     bk_upload_via_s3cmd "$1";;
+    esac
+    bk_log -p "Uploading ${1##*/} [Done]"
+}
+
+##########################################################################
+#   DO BACKUP
+##########################################################################
+
+bk_get_name() {
+    # Parse `filename_format` and return actiual filename.
+    local pref="$entry_prefix"
+    local name="${1##*/}"
+    local ext="$2"
+    local ff="$(echo "$filename_format" |
+        sed "s#{prefix}#$pref#;s#{name}#$name#")"
+    date +"${ff}${ext}"
+}
+
+bk_run_command() {
+    # Run commands listed in entry. Disabled by default.
+    # @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+    # IT'S DANGEROUS! DON'T USE UNTRUSTED COMMANDS IN ENTRY!
+    # @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+    if [[ "${allow_commands,,}" == "true" ]]; then
+        for cmd in "${entry_command[@]}"; do
+            bk_log -p "Executing command: $cmd"
+            # Run!
+            eval "$(printf "$cmd") &>> "$log""
+        done
+    else
+        bk_log -p "ERROR: tried to execute commands: ${entry_command[@]}"
+        bk_err "Commands executing is not allowed!"
+    fi
+}
+
+bk_do_archive() {
+
+    _tar_exclude_items() {
+        # Exclude files and directories from backup.
+        for items in ${entry_exclude[*]}; do
+            items="$( tr ',' ' ' <<< "$items")"
+            for item in $items; do
+                echo -en "--exclude='$item' "
+            done
+        done
+    }
+
+    for filepath in "${entry_archive[@]}"; do
+
+        if [ -f "$filepath" ] || [ -d "$filepath" ]; then
+            :
+        else
+            bk_err "$filepath: no such file or directory."
+        fi
+
+        echo "Archiving files: $filepath ..." | bk_log -p
+
+        # Archive name.
+        dest_file="$entry_local"/"$(bk_get_name "$filepath" .tar.gz)"
+
+        # Do archive!
+        eval \
+            tar -czf "$dest_file" $(_tar_exclude_items) \
+            -C $(dirname "$filepath") $(basename "$filepath") \
+            |& bk_log -p
+
+        bk_log -p "Archiving files: $filepath [Done]"
+
+        # Verifying.
+        if [ ! "$no_verify" ]; then
+            if gunzip -c "$dest_file" | tar -t > /dev/null; then
+                bk_log -p "Integrity (gzip uncompressing and tar -t) [Success]"
+            else
+                bk_log -p "Integrity (gzip uncompressing and tar -t) [Fail]"
+            fi
+
+            local in_dir="$(find "$filepath" | wc -l)"
+            local in_tar="$(tar -tf "$dest_file" | wc -l)"
+
+            if [[ "$in_dir" == "$in_tar" ]]; then
+                bk_log -p \
+                "Completeness: items: $in_dir, archived: $in_tar [Success]"
+            elif [[ "${#entry_exclude[@]}" != 0 ]]; then
+                echo "Completeness: Some files is excluded by configuration:
+                items: $in_dir, archived: $in_tar [Skipped]" \
+                | sed 's/^ *//g' | tr '\n' ' ' | bk_log -p
+            else
+                bk_err \
+                "Completeness: items: $in_dir, archived: $in_tar [Failed]"
+            fi
+        else
+            bk_log -p 'Archive integrity check is skipped.'
+        fi
+
+        bk_log -p "Archive saved as: $dest_file"
+        bk_upload_file "$dest_file"
+    done
+}
+
+bk_do_copy() {
+    # Copy files.
+    for filepath in "${entry_copy[@]}"; do
+        bk_log -p "Copying: $filepath"
+        if [ -f "$filepath" ]; then
+            dest_file="${entry_local}/$(bk_get_name "${filepath%%.*}" ".${filepath##*.}")"
+        elif [ -d "$filepath" ]; then
+            des_file="${entry_local}/$(bk_get_name "${filepath##*/}")"
+        fi
+        cp --archive "$filepath" "$dest_file"
+        bk_log -p "Copying: $filepath [Done]"
+        bk_upload_file "$dest_file"
+    done
+}
+
+bk_dump_mysql() {
+    # Do MySQL dump.
+
+    bk_log -p "Dumping database '${path##*/}' owned by ${user}@${host} (MySQL) ..."
+
+    dump_name="$entry_local"/"$(bk_get_name "$path" .sql.gz )"
+    [ "$port" ] || port=3306  # Set default MySQL port.
+
+    mysqldump \
+        --host="$host" \
+        --port="$port" \
+        "${path##*/}" \
+        --user="$user" \
+        --password="$password" \
+        | gzip -c > "$dump_name" |& bk_log
+
+    if [ -s "$dump_name" ]; then
+        bk_log -p "Dumping database '${path##*/}' owned by ${user}@${host} (MySQL) [Done]"
+        bk_log -p "Dump saved as: $dump_name"
+        bk_upload_file "$dump_name"
+    else
+        rm "$dump_name"
+        bk_err "Something went wrong. Dump size is 0 bytes. Removing $dump_name"
+    fi
+}
+
+bk_dump_postgresql() {
+    # Do PostgreSQL dump.
+
+    bk_log "Dumping database '${path##*/}' owned by ${user}@${host} (PostgreSQL) ..."
+
+    dump_name="$entry_local"/"$(bk_get_name "$db_name" .psql.gz)"
+    [ "$port" ] || port=5432  # Set default PostgreSQL port.
+    export PGPASSWORD="$password"
+
+    pg_dump \
+        --host="$host" \
+        --port="$port" \
+        --dbname="${path##*/}" \
+        --username="$user" \
+        --no-password | gzip -c > "$dump_name" |& bk_log
+
+    unset PGPASSWORD
+
+    if [ -s "$dump_name" ]; then
+        bk_log "Dumping database '${path##*/}' owned by ${user}@${host} (PostgreSQL) [Done]"
+        bk_log "Dump saved as: $dump_name"
+        bk_upload_file "$dump_name"
+
+    else
+        rm "$dump_name"
+        bk_err "Something went wrong. Dump size is 0 bytes. Removing $dump_name"
+    fi
+}
+
+bk_backup_database() {
+    # Do MariaDB/MySQL dump.
+
+    for reqs in "${entry_database[@]}"; do
+        bk_parse_uri "$reqs"
+        case "$schema" in
+            mysql|mariadb) bk_dump_mysql;;
+            postgres|postgresql|psql) bk_dump_postgresql;;
+        esac
+    done
+}
+
+##########################################################################
+#   RUN BACKUP
+##########################################################################
+
+bk_find_entries() {
+    # Return array `all_entries` with entry files.
+    # from /etc/baka/entries (`entries`). Resolve symlinks too.
+
+    # Find out entries.
+    while read -r file; do
+        # Resolve symlinks.
+        if [ -L "$file" ]; then
+            symb="$(readlink "$file")"
+            [ -f "$symb" ] && file="$symb"
+        fi
+        # Collect all entries, except ignored if set.
+        if [[ ! "${ignore[@]}" =~ "$(basename "$file")" ]]
+        then
+            all_entries+=("$file")
+        fi
+    done <<< "$(find "$entries" -type f)"
+
+    # Exit if nothing found.
+    if [[ "${#all_entries[@]}" == 0 ]]
+    then
+        bk_err "$entries: No entries to backup."
+    fi
+
+    # BEGIN Security issue fix.
+    #
+    # Check entries and baka.conf permissions.
+    for item in "${all_entries[@]}" "$conf"; do
+        if [ "$(stat -c "%a" "$item")" -gt 644 ]; then
+            bk_err "$item: Permissions are too open\n" \
+                "It is recommended that your configurations" \
+                "are NOT accessible by others."
+        fi
+    done
+    # END Security issue fix.
+}
+
+bk_get_selected_entries() {
+    # Find entries passed as argument for `--entry` option.
+    for entry in "${sel_entries[@]}"; do
+        if [ -f "${PWD}/${entry}" ]; then
+            all_entries+=("${PWD}/${entry}")
+        elif [ -f "${entries}/${entry}" ]; then
+            all_entries+=("${entries}/${entry}")
+        elif [ -f "$entry" ]; then
+            all_entries+=("${entry}")
+        else
+            bk_log "baka: ERROR: $entry: Entry file not found"
+            bk_err "$entry: Entry file not found"
+        fi
+    done
+}
+
+# Test
+
+bk_test_file() {
+    if [ -f "$1" ] || [ -d "$1" ]; then
+        : #do nothing, it's okay
+    else
+        bk_err "cannot backup: $1: No such file of directory"
+    fi
+}
+
+bk_test_database() {
+    # $1 - database uri
+
+    bk_parse_uri "$1"
+
+    case "$schema" in
+        mysql|mariadb)
+            # MySQL checking.
+            [ "$port" ] || port=3306  # Set default MySQL port.
+
+            echo -n "Checking database ${path##*/} on $host (MySQL): "
+
+            echo 'SHOW VARIABLES LIKE "%version%";' |
+            mysql \
+                --host="$host" \
+                --port="$port" \
+                "${path##*/}" \
+                --user="$user" \
+                --password="$password" > /dev/null
+
+            echo "OK";;
+        postgres|postgresql|psql)
+            echo -n "Checking database: ${path##*/} on $host (PostgreSQL): "
+
+            [ "$port" ] || port=5432  # Set default PostgreSQL port.
+            export PGPASSWORD="$password"
+
+            echo 'SELECT version();' |
+            psql \
+                --host="$host" \
+                --port="$port" \
+                --dbname="${path##*/}" \
+                --username="$user" \
+                --no-password > /dev/null
+
+            echo "OK"
+            unset PGPASSWORD
+            ;;
+        *) bk_err "$schema: unsuported database type"
+    esac
+}
+
+bk_test_remote() {
+    if [ "$entry_remote" == 'none' ]; then
+        echo "No remote storage."
+    else
+        echo "Remote server testing: "$entry_remote" ..."
+        echo 'This is baka test file' > ./testfile
+        echo "Test file uploading ..."
+
+        bk_parse_uri "$entry_remote"
+
+        case "$schema" in
+            rsync)
+                bk_upload_via_rsync ./testfile
+                echo "Test file uploaded successfully."
+                echo "Removing test file ..."
+                ssh -p "$port" "${user}@${host}" "rm -f ${path}/${dir_per_date}/testfile"
+                ;;
+            s3)
+                bk_upload_via_s3cmd ./testfile
+                echo "Test file uploaded successfully."
+                echo "Removing test file ..."
+                s3cmd -p --no-progress del "${entry_remote}/${dir_per_date}/testfile"
+                ;;
+        esac
+        rm ./testfile
+    fi
+    echo "Test is successful!"
+}
+
+bk_get_local_dirs() {
+    # Return destination directories list.
+
+    bk_find_entries  # Get entries list.
+
+    local temp=`mktemp`
+
+    # Collect directories list
+    for entry in "${all_entries[@]}"; do
+        bk_load_entry "$entry"
+        bk_get_entry_local > /dev/null
+        echo "$entry_local" >> $temp
+    done
+
+    # Save list.
+    local_dirs="$(cat $temp | sort -u)"
+    rm $temp
+}
+
+bk_dir_per_date() {
+    [ "$dir_per_date" ] && dir_per_date="$(date +"$dir_per_date")"
+    entry_local="${entry_local}/${dir_per_date}"
+    if [ ! "$dry_run" ]; then
+        mkdir -p "$entry_local"
+    fi
+}
+
+bk_do_backup() {
+
+    ######################################################################
+    #   Main function for 'backup' command.
+    ######################################################################
+
+    # Parse args.
+    if [[ "$@" =~ -i|--i ]] && [[ "$@" =~ -e|--e ]]
+    then
+        bk_err \
+            "You cannot use '--ignore' and '--entry' options together.
+            See 'baka backup help' or 'man baka' for more info."
+    fi
+
+    while (( "$#" )); do
+        case "$1" in
+            -i|--ignore|--ignore=*)
+                bk_getopts "$1" "$2"
+                ignore+=("$arg")
+                shift "$sft";;
+            -e|--entry|--entry=*)
+                bk_getopts "$1" "$2"
+                sel_entries+=("$arg")
+                shift "$sft";;
+            --no-verify)    no_verify=1;    shift;;
+            --dry-run)      dry_run=1;      shift;;
+            --local)        force_local=1;  shift;;
+            --remove)       remove_backups=1; shift;;
+            --help|help)    bk_do_backup_help;;
+            *) bk_cli_err "$1"; exit 1;;
+        esac
+    done
+
+    # Load baka.conf before actions.
+    bk_load_baka_conf
+
+    # Startup log.
+    date +'Start: %d %b %Y %T %z'
+    bk_log "baka: Backup STARTED"
+    bk_log -p "Configuration file: $conf"
+    bk_log -p "Local storage:" \
+        "$([ "$local" ] && echo "$local" || echo 'from entry')"
+    bk_log -p "Remote storage:" \
+        "$([ "$remote" ] && echo "$remote" || echo 'from entry')"
+
+    # Force local backup ('--local' option).
+    if [ "$force_local" ]; then
+        #remote='none'
+        bk_log -p "baka: WARNING: Local backup forced!" \
+            "Backups will not be uploaded to remote storage."
+    fi
+
+    # BEGIN Collect entries.
+    if [ "$sel_entries" ]  # fetch from `--entry` option.
+    then
+        bk_get_selected_entries
+        # Selected entries basenames.
+        # Used only for display in echo below.
+        local seb="$( \
+            for ent in ${all_entries[@]}; do
+                echo -n "$(basename $ent) "
+            done
+        )"
+        echo "Selected entries: $seb" | bk_log -p
+    else
+        # `--ignire` option.
+        [ "$ignore" ] && \
+            echo "Skipped entries: ${ignore[@]}" | bk_log -p
+        bk_find_entries
+    fi
+    # END Collect entries.
+
+    # Write to log entries list.
+    bk_log "Entries to backup (${#all_entries[@]}): ${all_entries[@]}"
+
+    # Entry counter.
+    ecnt=${#all_entries[@]} # Entries count.
+    iter=1  # Iterator.
+
+    # For every entry in `entries` ...
+    for entry in "${!all_entries[@]}"; do
+        # Display entry name and counter.
+        # Output: -> Entry: example.org [1/5]
+        echo
+        bk_log -p \
+        "\e[1m-> Entry: ${all_entries[iter-1]##*/} [$(($entry+1))/$ecnt]\e[0m"
+
+        # Get data.
+        bk_load_entry "${all_entries[iter-1]}"
+        bk_get_entry_local
+
+        [ "$force_local" ] || bk_get_entry_remote
+        [ "$force_local" ] && entry_remote=none
+
+        bk_get_entry_prefix "${all_entries[iter-1]}"
+        # Get entry_archive, entry_copy and others:
+        for variable in 'archive' 'copy' 'exclude' 'database' 'command'; do
+            bk_get_entry_data $variable
+        done
+
+        # Backup BEGIN
+
+        bk_dir_per_date
+
+        bk_log -p "Path: ${all_entries[iter-1]}"
+        bk_log -p "Local storage: $entry_local"
+        bk_log -p "Remote storage: $entry_remote"
+
+#echo "RECOVERED LOCAL: ${entry_local//$dir_per_date/}"
+
+        [ "$dry_run" ] || {
+            bk_run_command
+            bk_do_archive
+            bk_do_copy
+            bk_backup_database
+        }
+
+        [ "$dry_run" ] && {
+            bk_test_remote
+        }
+
+        # Backup END
+
+        let iter++  # Increase iterator for entry counter.
+    done
+
+    # Remove old backups ('--remove' option).
+    if [ "$remove_backups" ]; then
+        echo
+        bk_log -p "\e[1m-> Remove old backups ...\e[0m"
+        bk_remove_old_backups --force
+    fi
+
+    echo  # Just print new line.
+    bk_log "baka: Backup FINISHED"
+    echo "Backup [Done]"
+}
+
+# LIST
+
+bk_list_entries() {
+    # List entries.
+
+    while (( "$#" )); do
+        case "$1" in
+            -v|--verbose) _verbose=1; shift;;
+            --help|help) bk_list_entries_help;;
+            *) bk_cli_err "$1"; exit 1;;
+        esac
+    done
+
+    # Load baka.conf before actions.
+    bk_load_baka_conf
+
+    bk_find_entries  # Get entries list.
+
+    if [ "$_verbose" ]; then
+        # Verbosely.
+        {
+            echo 'Name | Path | Local |Remote'
+            for entry in "${all_entries[@]}"; do
+                echo -en "${entry##*/} | $entry"
+                bk_load_entry "$entry"
+                bk_get_entry_local > /dev/null
+                bk_get_entry_remote > /dev/null
+                echo -en "| $entry_local |"
+                echo -e "$entry_remote"
+            done
+        } | column -t -s '|'
+        #| column --table --table-columns Name,Path,Local,Remote --separator '|'
+    else
+        # Short format.
+        for entry in "${all_entries[@]}"; do
+            echo -e "$entry"
+        done
+    fi
+}
+
+# REMOVE
+
+bk_remove_old_backups() {
+    # Remove old backups from local storage.
+
+    while (( "$#" )); do
+        case "$1" in
+            -l|--list) remove_list=1; shift;;
+            -f|--force) assume_yes=1; shift;;
+            --help|help)
+                bk_remove_old_backups_help;;
+            *) bk_cli_err "$1"; exit 1;;
+        esac
+    done
+
+    # Load baka.conf before actions.
+    bk_load_baka_conf
+
+    bk_get_local_dirs
+    [ "$remove_list" ] && {
+        while read -r dir; do
+            find "$dir" -type f -mtime +$livetime
+        done <<< "$local_dirs"
+        exit 0
+    }
+
+    _yesno() {
+        # Yes/No interactive dialog.
+        #
+        # Usage: if yesno 'Question'; then ...
+
+        local __answer=
+        [ "$assume_yes" ] && return 0
+
+        while [ ! "$__answer" ]; do
+            echo -en "$1 [y/n] "
+            read -r reply
+            case "${reply,,}" in
+                y|yes)  __answer=0;;
+                n|no)   __answer=1;;
+                *)      echo "Please, answer y or n";;
+            esac
+        done
+        return "$__answer"
+    }
+
+    if [ "$assume_yes" ]; then
+        bk_log -p "baka: WARNING: Forced deletion of old backups is enabled."
+    else
+        echo \
+            "Files older than $livetime days will be removed. This action cannot be undone."
+        echo -e "Use '--force' option to remove files without prompt.\n"
+        if _yesno "Continue?"; then
+            :
+        else
+            echo Aborted.; exit 130
+        fi
+    fi
+
+    while read -r dir; do
+        bk_log "Removing old backups (older than $livetime days) ..."
+        bk_log "Removing files from directory: $dir"
+        find "$dir" -type f -mtime +$livetime -delete -print | bk_log
+        echo '(empty output -- no files deleted)'
+    done <<< "$local_dirs"
+}
+
+##########################################################################
+#   CLI ARGUMENTS PARSING
+##########################################################################
+
+bk_getopts() {
+    # GNU-style CLI options parser.
+    #
+    # Parse --opt VAL and --opt=VAL options.
+    # Requires 2 arguments: $1, $2.
+    # Returns:
+    #   $opt - option name.
+    #   $arg - option's value.
+    #   $sft - value for shift.
+    if [[ "$1" =~ .+=.+ ]]; then
+        opt="${1%%=*}"; arg="${1#*=}"; sft=1
+    elif [[ ! "$1" =~ .+=$ ]] && \
+         [ "$2" ] && [ "${2:0:1}" != '-' ]
+    then
+        opt="$1"; arg="$2"; sft=2
+    else
+        opt="$1"
+        if [[ "$1" =~ .+=$ ]]; then opt="${1:0: -1}"; fi
+        bk_err -s "missing argument for: $opt"
+    fi
+}
+
+# Show help if no arguments is passed.
+[[ "$@" ]] || bk_help
+
+# MAIN ARGS PARSER
+##################
+
+while (( "$#" )); do
+    case "$1" in
+        backup) shift; bk_do_backup "$@"; shift "$#";;
+        list)   shift; bk_list_entries "$@"; shift "$#";;
+        remove) shift; bk_remove_old_backups "$@"; shift "$#";;
+        -c|--config|--config=*)
+            bk_getopts "$1" "$2"; conf="$arg"; shift "$sft"
+            [ -f "${PWD}/${conf}" ] && conf="${PWD}/${conf}";;
+        --version)  bk_version;;
+        --help|help)    bk_help "$2";;
+        *)  bk_cli_err "$1";  exit 1
+    esac
+done

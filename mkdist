@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# Make DEB package!
+
+ver=0.2.0
+credit='ge <me@nixhacks.net>'
+
+[ -d $PWD/dist/ ] && rm -rf dist/
+[ -f baka_*.deb ] && rm baka_*.deb
+
+# DIRS
+
+prefix=dist
+mkdir -p $prefix/DEBIAN
+mkdir -p $prefix/usr/bin
+mkdir -p $prefix/usr/share/bash-completion/completions
+mkdir -p $prefix/usr/share/man/man1
+cp -r etc/ $prefix
+
+# BINARIES
+
+cp src/baka $prefix/usr/bin/baka && chmod +x $prefix/usr/bin/baka
+cp src/completion $prefix/usr/share/bash-completion/completions/baka
+
+# MANPAGES
+
+pandoc --from=markdown --to=man --standalone \
+    docs/baka.1.md --output=$prefix/usr/share/man/man1/baka.1
+
+c=`date +'%d %b %Y'`
+sed -i "s%\.TH \"\" \"\" \"\" \"\" \"\"%\.TH BAKA 1 \"$c\" \"baka $ver\"%" $prefix/usr/share/man/man1/baka.1
+gzip -9 $prefix/usr/share/man/man1/baka.1
+
+# DEBIAN/*
+
+cat > $prefix/DEBIAN/control << EOF
+Package: baka
+Version: $ver
+Section: admin
+Priority: optional
+Maintainer: $credit
+Homepage: http://nixhacks.net/baka
+Architecture: all
+Depends: rsync, s3cmd
+Description: Simple backuping tool.
+ Backup files and MySQL/MariaDB and PostgreSQL databases.
+EOF
+
+cat > $prefix/DEBIAN/changelog << EOF
+baka (0.2.0) testing; urgency=medium
+
+ * Code refactoring.
+
+    WARNING! All changes in this version breaks backward capatibility!
+
+    # CLI
+
+    New options:
+
+    - '--config'. Specify your baka.conf file.
+    - 'backup --dry-run'. Test configuration without backup.
+    - 'remove --list'. Print files to delete.
+
+    Changed:
+
+    - 'list' command now has two options '--verbose' and '--help'. Verbose output show Entry name, path and local and remote storages in table view.
+
+    Removed:
+
+    - 'show' command. View configuration file directly instead.
+    - 'edit' command. Edit configuration file directly instead.
+    - 'test' command. Use 'backup --dry-run' instead.
+
+    # baka.conf (former name: main.conf)
+
+    Added:
+
+    - Default parameter values now is built in baka. Override it in baka.conf
+    - 'entries' variable. You can set entries directory in baka.conf
+    - 'filename_format'. Special formatting for filenames.
+    - 'autoprefix'. Add automatic prefix to filenames (based on entry file name).
+    - 'dir_per_date'. Backups path format. See baka(1).
+
+    Changed:
+
+    - 'dest' now is 'local' and can be used in baka.conf and entries.
+    - 'remote' now is URI (like '[scheme]://[user[:password]]@[host[:port]][/path]') and can be used in baka.conf and entries.
+
+    Removed:
+
+    - 'nf', use 'filename_format' instead
+    - 'df', use 'filename_format'
+    - 'log_df', use 'log_format' istead
+
+    # Entries
+
+    Added:
+
+    - 'local'. This is renamed 'dest'.
+    - 'remote'. Now you can specify remote storage per entry.
+    - 'prefix'. Override filename prefix.
+    - 'archive'. Renamed 'files'. Archive files into **.tar.gz**.
+    - 'copy'. Simple file copy  without compression.
+    - 'database'. Replacement for 'mysql' and 'postrges' variables. Provide DB URI.
+
+    Removed:
+
+    - 'dest'. Use 'local' instead.
+    - 'mysql' and 'postgres' variables. Use 'database' instead.
+    - 'files' variable. Use 'archve' instead.
+
+-- $credit  `date -R`
+
+baka (0.1.2) testing; urgency=medium
+
+ * Initial release.
+
+ -- $credit  Sat, 31 Jul 2021 15:22:17 +0300
+EOF
+
+cat > $prefix/DEBIAN/copyright << EOF
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: baka
+Upstream-Contact: http://nixhacks.net/baka
+Source: http://nixhacks.net/baka
+
+Files: *
+Copyright: `date +%Y` $credit
+License: GPL-3.0+
+
+Files: debian/*
+Copyright: `date +%Y` $credit
+License: GPL-3.0+
+
+License: GPL-3.0+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+ .
+ This package is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program. If not, see <https://www.gnu.org/licenses/>.
+ .
+ On Debian systems, the complete text of the GNU General
+ Public License version 3 can be found in "/usr/share/common-licenses/GPL-3".
+
+# Please also look if there are files or directories which have a
+# different copyright/license attached and list them here.
+# Please avoid picking licenses with terms that are more restrictive than the
+# packaged work, as it may make Debian's contributions unacceptable upstream.
+#
+# If you need, there are some extra license texts available in two places:
+#   /usr/share/debhelper/dh_make/licenses/
+#   /usr/share/common-licenses/
+EOF
+
+dpkg-deb --build $prefix baka_$ver.deb
