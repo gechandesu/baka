@@ -776,6 +776,7 @@ bk_dir_per_date() {
     [ "$dir_per_date" ] && dir_per_date="$(date +"$dir_per_date")"
     entry_local="${entry_local}/${dir_per_date}"
     if [ ! "$dry_run" ]; then
+        bk_log "baka: Create tree (dir_per_date): $entry_local"
         mkdir -p "$entry_local"
     fi
 }
